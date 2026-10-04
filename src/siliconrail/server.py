@@ -7,6 +7,7 @@ import json
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from .rtl import RTLParseError
 from .service import Service
 
 
@@ -34,6 +35,30 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, self.service.health())
             return
         self.send_json(404, {"error": {"code": "not_found", "message": f"no route for {self.path}"}})
+
+    def do_POST(self) -> None:
+        if self.path != "/v1/rtl/parse":
+            self.send_json(404, {"error": {"code": "not_found", "message": f"no route for {self.path}"}})
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        raw = self.rfile.read(length) if length > 0 else b""
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self.send_json(400, {"error": {"code": "invalid_request", "message": "body must be a JSON object with a string 'source'"}})
+            return
+        if not isinstance(payload, dict) or not isinstance(payload.get("source"), str):
+            self.send_json(400, {"error": {"code": "invalid_request", "message": "body must be a JSON object with a string 'source'"}})
+            return
+        try:
+            ir = self.service.parse_rtl(payload["source"])
+        except RTLParseError as exc:
+            self.send_json(422, {"error": {"code": exc.code, "line": exc.line, "column": exc.column, "message": exc.message}})
+            return
+        self.send_json(200, ir)
 
     def log_message(self, fmt: str, *args: object) -> None:
         """Silence per-request logging so recorded output stays stable."""
