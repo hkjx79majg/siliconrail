@@ -7,6 +7,7 @@ import json
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from .rtl import RTLParseError
 from .service import Service
 
 
@@ -16,6 +17,9 @@ def env_address() -> tuple[str, int]:
     if not host or not port.isdigit():
         raise SystemExit(f"invalid SILICONRAIL_ADDR: {raw!r}")
     return host, int(port)
+
+
+_INVALID_REQUEST_MESSAGE = "body must be a JSON object with a string 'source'"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -34,6 +38,46 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, self.service.health())
             return
         self.send_json(404, {"error": {"code": "not_found", "message": f"no route for {self.path}"}})
+
+    def do_POST(self) -> None:
+        if self.path != "/v1/rtl/parse":
+            self.send_json(404, {"error": {"code": "not_found", "message": f"no route for {self.path}"}})
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        raw = self.rfile.read(length) if length > 0 else b""
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self.invalid_request()
+            return
+        if not isinstance(payload, dict) or not isinstance(payload.get("source"), str):
+            self.invalid_request()
+            return
+        try:
+            ir = self.service.parse_rtl(payload["source"])
+        except RTLParseError as exc:
+            self.send_json(
+                422,
+                {
+                    "error": {
+                        "code": exc.code,
+                        "line": exc.line,
+                        "column": exc.column,
+                        "message": exc.message,
+                    }
+                },
+            )
+            return
+        self.send_json(200, ir)
+
+    def invalid_request(self) -> None:
+        self.send_json(
+            400,
+            {"error": {"code": "invalid_request", "message": _INVALID_REQUEST_MESSAGE}},
+        )
 
     def log_message(self, fmt: str, *args: object) -> None:
         """Silence per-request logging so recorded output stays stable."""
