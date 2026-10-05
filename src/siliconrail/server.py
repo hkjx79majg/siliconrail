@@ -39,8 +39,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.send_json(404, {"error": {"code": "not_found", "message": f"no route for {self.path}"}})
 
+    _POST_ROUTES = {
+        "/v1/rtl/parse": "parse_rtl",
+        "/v1/rtl/widths": "analyze_widths",
+    }
+
     def do_POST(self) -> None:
-        if self.path != "/v1/rtl/parse":
+        method_name = self._POST_ROUTES.get(self.path)
+        if method_name is None:
             self.send_json(404, {"error": {"code": "not_found", "message": f"no route for {self.path}"}})
             return
         try:
@@ -57,7 +63,7 @@ class Handler(BaseHTTPRequestHandler):
             self.invalid_request()
             return
         try:
-            ir = self.service.parse_rtl(payload["source"])
+            ir = getattr(self.service, method_name)(payload["source"])
         except RTLParseError as exc:
             self.send_json(
                 422,

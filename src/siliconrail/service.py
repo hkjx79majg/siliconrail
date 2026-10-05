@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from . import __version__
 from .rtl import RTLParseError, parse
+from .widths import analyze as _analyze_widths
 
 
 class Service:
@@ -30,6 +31,20 @@ class Service:
         if not isinstance(source, str):
             raise TypeError(f"source must be str, got {type(source).__name__}")
         return parse(source)
+
+    def analyze_widths(self, source: str) -> dict:
+        """Parse like :meth:`parse_rtl` and annotate the IR with bit widths.
+
+        Every expression node in an assignment target or value gains a
+        ``width`` field; every assignment gains ``target_width``,
+        ``value_width`` and ``conversion`` (``exact``, ``zero_extend`` or
+        ``truncate``). Raises ``TypeError`` when ``source`` is not a string
+        and :class:`RTLParseError` for any parse failure, exactly like
+        :meth:`parse_rtl`.
+        """
+        if not isinstance(source, str):
+            raise TypeError(f"source must be str, got {type(source).__name__}")
+        return _analyze_widths(source)
 
 
 __all__ = ["Service", "RTLParseError"]
