@@ -45,6 +45,9 @@ class Handler(BaseHTTPRequestHandler):
     }
 
     def do_POST(self) -> None:
+        if self.path == "/v1/cdc/check":
+            self.do_cdc_check()
+            return
         method_name = self._POST_ROUTES.get(self.path)
         if method_name is None:
             self.send_json(404, {"error": {"code": "not_found", "message": f"no route for {self.path}"}})
@@ -78,6 +81,48 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         self.send_json(200, ir)
+
+    def do_cdc_check(self) -> None:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        raw = self.rfile.read(length) if length > 0 else b""
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            payload = None
+        constraints = payload.get("constraints") if isinstance(payload, dict) else None
+        if (
+            not isinstance(payload, dict)
+            or not isinstance(payload.get("design"), dict)
+            or (constraints is not None and not isinstance(constraints, dict))
+        ):
+            self.send_json(
+                400,
+                {
+                    "error": {
+                        "code": "invalid_request",
+                        "message": "body must be a JSON object with an object 'design'"
+                        " and an optional object 'constraints'",
+                    }
+                },
+            )
+            return
+        try:
+            report = self.service.check_cdc(payload["design"], constraints)
+        except ValueError as exc:
+            self.send_json(
+                422, {"error": {"code": "invalid_design", "message": str(exc)}}
+            )
+            return
+        except KeyError as exc:
+            message = exc.args[0] if exc.args else str(exc)
+            self.send_json(
+                422, {"error": {"code": "unknown_object", "message": message}}
+            )
+            return
+        self.send_json(200, report)
 
     def invalid_request(self) -> None:
         self.send_json(

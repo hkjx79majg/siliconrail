@@ -8,6 +8,7 @@ README.md plug in behind this module.
 from __future__ import annotations
 
 from . import __version__
+from .cdc import check as _check_cdc
 from .rtl import RTLParseError, parse
 from .widths import analyze as _analyze_widths
 
@@ -45,6 +46,25 @@ class Service:
         if not isinstance(source, str):
             raise TypeError(f"source must be str, got {type(source).__name__}")
         return _analyze_widths(source)
+
+    def check_cdc(self, design: dict, constraints: dict | None = None) -> dict:
+        """Run structural clock-domain-crossing analysis on an elaborated design.
+
+        ``design`` is a flat, fully elaborated netlist (registers,
+        combinational gates and memories connected by nets; see
+        :mod:`siliconrail.cdc` for the format). ``constraints`` may
+        declare asynchronous clock groups, synchronous clock groups,
+        quasi-static objects and reset definitions; constraints only
+        steer this report and never modify the design.
+
+        Returns a JSON-serializable deterministic report. Raises
+        ``TypeError`` when ``design`` is not a dict, ``ValueError`` when
+        the design is not fully elaborated, a clock connection cannot be
+        resolved, or the constraints are contradictory, and ``KeyError``
+        when a constraint references an object absent from the design.
+        Unsafe crossings are analysis results, not failures.
+        """
+        return _check_cdc(design, constraints)
 
 
 __all__ = ["Service", "RTLParseError"]

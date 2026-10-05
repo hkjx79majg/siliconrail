@@ -32,10 +32,30 @@ PYTHONPATH=src python3 -m siliconrail.server --host 127.0.0.1 --port 8080
 - 值较目标窄为 `zero_extend`，较宽为 `truncate`（仅标注，不改写表达式树或常量值），相等为 `exact`。
 - 失败语义与 `parse_rtl` 完全相同：非字符串抛 `TypeError`，解析失败抛同一 `RTLParseError`。HTTP 入口为 `POST /v1/rtl/widths`，请求约定与错误响应（400 `invalid_request` / 422 四字段）同 `/v1/rtl/parse`。
 
+## 跨时钟域结构检查
+
+`Service.check_cdc(design, constraints=None)` 对已经完成层次展开和参数求值的设计执行结构性 CDC 检查，返回可 JSON 序列化的确定性报告；约束只影响本次报告，不改写输入设计。HTTP 入口为 `POST /v1/cdc/check`，请求体为 `{"design": {...}, "constraints": {...}?}`。
+
+**设计格式**（JSON 安全的 dict，扁平网表）：
+
+- `top`（可选字符串）、`elaborated`（可选；显式为 `false`，或仍含 `modules` / 非空 `instances` / 非空 `parameters` 时视为未展开，抛 `ValueError`）。
+- `clocks`：`{"name": "clk"}` 声明根时钟；`{"name": "div", "derived_from": "clk", "divide_by": 2}` 声明经可识别整数分频、相位关系明确的派生时钟。
+- `ports`：`{"name", "direction", "width"?}`，`input`/`inout` 端口是 `external` 域的潜在穿越源。
+- `nets`（可选）：`{"name", "width"?, "const"?, "gray_code"?}`，声明线网位宽、常量绑定与格雷码标记。
+- `cells`：`dff`（`clk`/`d`/`q`，可选 `edge`、`async_reset`/`async_set`、`width`、`gray_code`、`source`）、`logic`（`inputs`/`output`）、`memory`（`write_clock` 必填，可选 `write_enable`/`write_data`/`write_addr`/`read_data`/`read_addr`）。`source` 为 `{"module", "line", "column"}` 等 RTL 来源信息，报告原样带回。
+
+**约束格式**（可选 dict）：`async_clock_groups`（组内同步、组间异步）、`synchronous_clocks`（组内声明同步）、`quasi_static`（层次名列表，穿越被抑制）、`resets`（`{"name", "clock"?}`，声明后对应复位释放穿越降为 info）。约束引用设计中不存在的对象抛 `KeyError`；同一对时钟同时被声明为同步和异步抛 `ValueError`。
+
+**域关系**：同一时钟（含不同边沿）为同步；未提供异步关系时不同根时钟按潜在异步处理；同一根时钟经整数分频的域按同步处理。同步域之间不产生诊断。
+
+**报告**：`{"top", "domains", "clock_relations", "diagnostics", "summary"}`。`diagnostics` 按 `(source, dest)` 层次路径稳定排序，每条含 `source_domain`、`dest_domain`、`source`、`dest`、`width`、`category`、`severity`（`error`/`warning`/`info`）、`message`、`source_info`/`dest_info`。类别：`synchronized`（单比特、至少两级、同一目的时钟、级间无组合逻辑的寄存器链，info）、`sync_chain_fanout`（同步链第一级扇出到其他逻辑，error）、`state_element`、`combinational`、`memory_write_control`、`async_reset_release`（均 error）、`multi_bit_coherence`（多比特总线逐位双触发器仍有位间一致性风险，warning）、`gray_code`（已识别的格雷码穿越，info）。同一源端点到目的端点的重复汇合只保留一条（取最高严重级别）；同域路径、常量与准静态对象不产生诊断；空设计与纯组合设计返回零诊断报告。
+
+**失败语义**：`design` 非 dict 抛 `TypeError`；输入未展开、时钟连接无法解析（如时钟由逻辑驱动、派生时钟根缺失或分频比非正整数）、约束自相矛盾抛 `ValueError`；约束引用不存在的层次对象抛 `KeyError`。设计本身存在不安全穿越属于分析结果，不导致调用失败。HTTP 侧：请求体非法返回 400 `invalid_request`，`ValueError`/`KeyError` 分别返回 422 `invalid_design` / `unknown_object`。
+
 ## 验证
 
 ```bash
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
-当前基线在健康检查之外提供 Verilog-2001 组合逻辑子集的 RTL 解析、电路 IR 与无符号位宽推演（见上），尚未包含静态时序分析等后续能力，它们将从已冻结事实出发独立设计并验证。
+当前基线在健康检查之外提供 Verilog-2001 组合逻辑子集的 RTL 解析、电路 IR 与无符号位宽推演（见上），以及面向已展开设计的跨时钟域结构检查；尚未包含静态时序分析等后续能力，它们将从已冻结事实出发独立设计并验证。
