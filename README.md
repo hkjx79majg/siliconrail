@@ -22,10 +22,19 @@ PYTHONPATH=src python3 -m siliconrail.server --host 127.0.0.1 --port 8080
 
 过程块、实例与参数化语法属于子集之外，返回 `unsupported_construct`。
 
+## 位宽推演
+
+`Service.analyze_widths(source)` 在同一次入口中完成解析与无符号位宽推演，成功结果仍以 `{"modules": [...]}` 为顶层，模块、端口、网络、连续赋值的源码顺序与原有 IR 字段全部保留，表达式树与常量值不被改写。
+
+- 赋值目标与值中的每个表达式节点增加整数 `width`；每条连续赋值增加 `target_width`、`value_width` 与 `conversion`。`conversion` 取值为 `exact`（等宽）、`zero_extend`（值窄于目标）或 `truncate`（值宽于目标，语义上保留低 `target_width` 位）。
+- 推演规则（信号一律按无符号处理）：引用与带位宽常量采用声明宽度；无位宽十进制常量采用容纳其值且不小于 32 的宽度（`0` 为 32 位）；位选为 1 位；常量范围片选为 `abs(msb-lsb)+1`；拼接为各项宽度之和；逻辑非、归约运算、逻辑与/或与比较运算为 1 位；一元 `+`/`-`/按位取反沿用操作数宽度；移位采用左操作数宽度；其余受支持二元运算采用两侧较大宽度。
+- 失败语义与 `parse_rtl` 完全一致：非字符串抛 `TypeError`；空文本与词法/语法/重复名称/未声明信号/非法范围/不支持构造抛 `RTLParseError`，`code`/`line`/`column`/`message` 语义不变。
+- HTTP：`POST /v1/rtl/widths`，请求与响应约定与 `/v1/rtl/parse` 相同（非 JSON 对象、缺少 `source`、`source` 非字符串、无效 UTF-8 或畸形 JSON 返回 400 `invalid_request`；解析失败返回 422 并原样给出四个错误字段；额外请求字段允许）。`POST /v1/rtl/parse` 的响应保持不变。
+
 ## 验证
 
 ```bash
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
-当前基线在健康检查之外提供 Verilog-2001 组合逻辑子集的 RTL 解析与电路 IR（见上），尚未包含位宽推演、静态时序分析等后续能力，它们将从已冻结事实出发独立设计并验证。
+当前基线在健康检查之外提供 Verilog-2001 组合逻辑子集的 RTL 解析、电路 IR（见上）与无符号位宽推演，尚未包含语义检查、静态时序分析等后续能力，它们将从已冻结事实出发独立设计并验证。

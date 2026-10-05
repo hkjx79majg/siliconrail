@@ -511,3 +511,118 @@ class _Parser:
 def parse(source: str) -> dict:
     """Parse one Verilog source text into a JSON-serializable circuit IR."""
     return _Parser(source).parse_source()
+
+
+# ---------------------------------------------------------------------------
+# Unsigned width inference
+# ---------------------------------------------------------------------------
+
+# Logical and reduction operators collapse to a single bit.
+_UNARY_ONE_BIT_OPS = {"!", "&", "|", "^", "~&", "~|", "~^", "^~"}
+
+_LOGICAL_BINARY_OPS = {"&&", "||"}
+_COMPARISON_OPS = {"==", "!=", "<", "<=", ">", ">="}
+_SHIFT_OPS = {"<<", ">>", "<<<", ">>>"}
+
+
+def _unsigned_const_width(value: int) -> int:
+    """Width of an unsized decimal constant: enough bits, at least 32."""
+    return max(32, value.bit_length())
+
+
+class _WidthAnalyzer:
+    """Annotates a fresh deep copy of a parsed IR with expression widths.
+
+    Signals are treated as unsigned per the supported subset. The original
+    parse result is never mutated.
+    """
+
+    def __init__(self) -> None:
+        self.widths: dict[str, int] = {}
+
+    def analyze_module(self, module: dict) -> dict:
+        self.widths = {p["name"]: p["width"] for p in module["ports"]}
+        for net in module["nets"]:
+            self.widths[net["name"]] = net["width"]
+        return {
+            "name": module["name"],
+            "ports": module["ports"],
+            "nets": module["nets"],
+            "assigns": [self.analyze_assign(a) for a in module["assigns"]],
+        }
+
+    def analyze_assign(self, assign: dict) -> dict:
+        target = self.analyze_expr(assign["target"])
+        value = self.analyze_expr(assign["value"])
+        target_width = target["width"]
+        value_width = value["width"]
+        if value_width == target_width:
+            conversion = "exact"
+        elif value_width < target_width:
+            conversion = "zero_extend"
+        else:
+            conversion = "truncate"
+        return {
+            "target": target,
+            "value": value,
+            "target_width": target_width,
+            "value_width": value_width,
+            "conversion": conversion,
+        }
+
+    def analyze_expr(self, node: dict) -> dict:
+        kind = node["kind"]
+        if kind == "const":
+            declared = node["width"]
+            width = declared if declared is not None else _unsigned_const_width(node["value"])
+            return {"kind": "const", "value": node["value"], "width": width}
+        if kind == "ref":
+            return {"kind": "ref", "name": node["name"], "width": self.widths[node["name"]]}
+        if kind == "bit_select":
+            return {
+                "kind": "bit_select",
+                "base": self.analyze_expr(node["base"]),
+                "index": self.analyze_expr(node["index"]),
+                "width": 1,
+            }
+        if kind == "range_select":
+            width = abs(node["msb"] - node["lsb"]) + 1
+            return {
+                "kind": "range_select",
+                "base": self.analyze_expr(node["base"]),
+                "msb": node["msb"],
+                "lsb": node["lsb"],
+                "width": width,
+            }
+        if kind == "concat":
+            items = [self.analyze_expr(item) for item in node["items"]]
+            return {"kind": "concat", "items": items, "width": sum(i["width"] for i in items)}
+        if kind == "unary":
+            operand = self.analyze_expr(node["operand"])
+            op = node["op"]
+            width = 1 if op in _UNARY_ONE_BIT_OPS else operand["width"]
+            return {"kind": "unary", "op": op, "operand": operand, "width": width}
+        # binary
+        left = self.analyze_expr(node["left"])
+        right = self.analyze_expr(node["right"])
+        op = node["op"]
+        if op in _LOGICAL_BINARY_OPS or op in _COMPARISON_OPS:
+            width = 1
+        elif op in _SHIFT_OPS:
+            width = left["width"]
+        else:
+            width = max(left["width"], right["width"])
+        return {"kind": "binary", "op": op, "left": left, "right": right, "width": width}
+
+
+def analyze_widths(source: str) -> dict:
+    """Parse ``source`` and annotate the IR with unsigned expression widths.
+
+    On success every expression node carries a positive integer ``width``;
+    each continuous assignment additionally carries ``target_width``,
+    ``value_width`` and ``conversion`` (``exact``/``zero_extend``/
+    ``truncate``). The parse result itself is left untouched.
+    """
+    ir = parse(source)
+    analyzer = _WidthAnalyzer()
+    return {"modules": [analyzer.analyze_module(m) for m in ir["modules"]]}

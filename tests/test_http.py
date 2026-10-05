@@ -29,9 +29,12 @@ class HttpTestBase(unittest.TestCase):
         conn.close()
         return resp.status, json.loads(raw.decode("utf-8"))
 
-    def post(self, body, content_type="application/json"):
+    def post(self, body, content_type="application/json", path="/v1/rtl/parse"):
         raw = body if isinstance(body, (bytes, str)) else json.dumps(body)
-        return self.request("POST", "/v1/rtl/parse", body=raw, headers={"Content-Type": content_type})
+        return self.request("POST", path, body=raw, headers={"Content-Type": content_type})
+
+    def post_widths(self, body, content_type="application/json"):
+        return self.post(body, content_type=content_type, path="/v1/rtl/widths")
 
 
 class RtlParseEndpointTest(HttpTestBase):
@@ -101,6 +104,78 @@ class RtlParseEndpointTest(HttpTestBase):
                                        headers={"Content-Type": "application/json"})
         self.assertEqual(status, 404)
         self.assertEqual(payload["error"]["code"], "not_found")
+
+
+class RtlWidthsEndpointTest(HttpTestBase):
+    def test_success_matches_direct_entry(self):
+        source = "module m(input [7:0] a, output [3:0] o); assign o = a + 1; endmodule"
+        status, payload = self.post_widths({"source": source})
+        self.assertEqual(status, 200)
+        from siliconrail.service import Service
+
+        self.assertEqual(payload, Service().analyze_widths(source))
+        assign = payload["modules"][0]["assigns"][0]
+        self.assertEqual(assign["target_width"], 4)
+        self.assertEqual(assign["value_width"], 32)
+        self.assertEqual(assign["conversion"], "truncate")
+
+    def test_parse_error_maps_to_422_with_four_fields(self):
+        status, payload = self.post_widths({"source": "module m(input a, output o);\nassign o = nope;\nendmodule"})
+        self.assertEqual(status, 422)
+        error = payload["error"]
+        self.assertEqual(set(error), {"code", "line", "column", "message"})
+        self.assertEqual(error["code"], "undeclared_signal")
+        self.assertEqual(error["line"], 2)
+        self.assertNotIn("modules", payload)
+
+    def test_invalid_requests_map_to_400(self):
+        bad_bodies = [
+            json.dumps([1, 2]),
+            json.dumps("module m; endmodule"),
+            json.dumps(42),
+            json.dumps({}),
+            json.dumps({"source": 42}),
+            json.dumps({"source": None}),
+            "{not json",
+            "module m; endmodule",
+        ]
+        for body in bad_bodies:
+            with self.subTest(body=body):
+                status, payload = self.post_widths(body)
+                self.assertEqual(status, 400)
+                self.assertEqual(payload["error"]["code"], "invalid_request")
+                self.assertTrue(payload["error"]["message"])
+
+    def test_invalid_utf8_is_invalid_request(self):
+        status, payload = self.post_widths(b'{"source": "module \xff"}')
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"]["code"], "invalid_request")
+
+    def test_empty_source_maps_to_422_syntax_error(self):
+        status, payload = self.post_widths({"source": ""})
+        self.assertEqual(status, 422)
+        self.assertEqual(payload["error"]["code"], "syntax_error")
+
+    def test_extra_fields_are_allowed(self):
+        source = "module m(input a, output o); assign o = a; endmodule"
+        status, payload = self.post_widths({"source": source, "extra": [1, 2]})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["modules"][0]["assigns"][0]["conversion"], "exact")
+
+    def test_unknown_post_path_still_404(self):
+        status, payload = self.request("POST", "/v1/rtl/unknown", body="{}",
+                                       headers={"Content-Type": "application/json"})
+        self.assertEqual(status, 404)
+        self.assertEqual(payload["error"]["code"], "not_found")
+
+    def test_parse_endpoint_response_unchanged(self):
+        source = "module m(input a, output o); assign o = a; endmodule"
+        status, payload = self.post({"source": source})
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            set(payload["modules"][0]["assigns"][0]), {"target", "value"}
+        )
+        self.assertEqual(payload["modules"][0]["assigns"][0]["target"], {"kind": "ref", "name": "o"})
 
 
 class BaselineBehaviorTest(HttpTestBase):

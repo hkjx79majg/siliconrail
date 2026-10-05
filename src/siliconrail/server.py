@@ -40,7 +40,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(404, {"error": {"code": "not_found", "message": f"no route for {self.path}"}})
 
     def do_POST(self) -> None:
-        if self.path != "/v1/rtl/parse":
+        if self.path not in ("/v1/rtl/parse", "/v1/rtl/widths"):
             self.send_json(404, {"error": {"code": "not_found", "message": f"no route for {self.path}"}})
             return
         try:
@@ -56,22 +56,33 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(payload, dict) or not isinstance(payload.get("source"), str):
             self.invalid_request()
             return
+        if self.path == "/v1/rtl/widths":
+            try:
+                ir = self.service.analyze_widths(payload["source"])
+            except RTLParseError as exc:
+                self.parse_error(exc)
+                return
+            self.send_json(200, ir)
+            return
         try:
             ir = self.service.parse_rtl(payload["source"])
         except RTLParseError as exc:
-            self.send_json(
-                422,
-                {
-                    "error": {
-                        "code": exc.code,
-                        "line": exc.line,
-                        "column": exc.column,
-                        "message": exc.message,
-                    }
-                },
-            )
+            self.parse_error(exc)
             return
         self.send_json(200, ir)
+
+    def parse_error(self, exc: RTLParseError) -> None:
+        self.send_json(
+            422,
+            {
+                "error": {
+                    "code": exc.code,
+                    "line": exc.line,
+                    "column": exc.column,
+                    "message": exc.message,
+                }
+            },
+        )
 
     def invalid_request(self) -> None:
         self.send_json(
